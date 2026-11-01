@@ -1,0 +1,23 @@
+name: Windows checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test-and-build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python -m pip install -r requirements-build.txt
+      - name: Test
+        run: .\.venv\Scripts\python -m unittest discover -s tests -v
+      - name: Build
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1

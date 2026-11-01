@@ -619,10 +619,15 @@ class GlassCalendar(QWidget):
     def today(self):
         self.current = date.today().replace(day=1); self.refresh()
 
+    def exec_dialog(self, dialog):
+        result = dialog.exec()
+        self.desktop_rim.sync()
+        return result
+
     def edit_event(self, day):
         key = day.isoformat()
         dialog = DayDialog(self, day, self.data['events'].get(key, ''), self.data['marks'].get(key))
-        if dialog.exec() == QDialog.DialogCode.Accepted:
+        if self.exec_dialog(dialog) == QDialog.DialogCode.Accepted:
             text, mark = dialog.value()
             if text.strip(): self.data['events'][key] = text.strip()
             else: self.data['events'].pop(key, None)
@@ -636,7 +641,7 @@ class GlassCalendar(QWidget):
 
     def add_item(self, key):
         dialog = ItemDialog(self, '添加' + ('待办' if key == 'todos' else '目标'))
-        if dialog.exec() == QDialog.DialogCode.Accepted:
+        if self.exec_dialog(dialog) == QDialog.DialogCode.Accepted:
             item = dialog.value()
             if item['text']:
                 item['done'] = False; self.data[key].append(item); self.save(); self.refresh(); self.check_reminders()
@@ -644,7 +649,7 @@ class GlassCalendar(QWidget):
     def edit_item(self, key, index):
         item = self.data[key][index]
         dialog = ItemDialog(self, '编辑', item)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
+        if self.exec_dialog(dialog) == QDialog.DialogCode.Accepted:
             value = dialog.value()
             if value['text']:
                 if value['due'] != item.get('due', ''): item.pop('notified', None)
@@ -661,7 +666,7 @@ class GlassCalendar(QWidget):
         dialog.button(QMessageBox.StandardButton.Yes).setText('删除')
         dialog.button(QMessageBox.StandardButton.Cancel).setText('取消')
         dialog.setDefaultButton(QMessageBox.StandardButton.Cancel)
-        return dialog.exec() == QMessageBox.StandardButton.Yes
+        return self.exec_dialog(dialog) == QMessageBox.StandardButton.Yes
 
     def toggle(self, key, index, value):
         item = self.data[key][index]; item['done'] = value

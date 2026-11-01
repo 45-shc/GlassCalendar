@@ -5,10 +5,10 @@ os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 import unittest
 from unittest.mock import patch
 
-from PySide6.QtCore import QCoreApplication, QPoint
+from PySide6.QtCore import QCoreApplication, QEvent, QPoint
 from PySide6.QtGui import QMoveEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QDialog, QWidget
 from shiboken6 import delete
 import glass_refraction as glass
 import main
@@ -31,7 +31,9 @@ class RefractionTests(unittest.TestCase):
         thumbnail_properties = []
         def capture_properties(_handle, pointer):
             props = ctypes.cast(pointer, ctypes.POINTER(glass.THUMBNAIL)).contents
-            thumbnail_properties.append((props.opacity, props.visible))
+            thumbnail_properties.append((props.opacity, props.visible,
+                                         (props.source.left, props.source.top,
+                                          props.source.right, props.source.bottom)))
             return 0
         with patch.object(glass.user32, 'IsWindow', return_value=1), \
              patch.object(glass.user32, 'GetClientRect', side_effect=lambda _, p: fill(p, glass.RECT, 0, 0, 900, 780)), \
@@ -46,10 +48,15 @@ class RefractionTests(unittest.TestCase):
              patch.object(glass.dwm, 'DwmUnregisterThumbnail', return_value=0):
             rim.sync()
             self.assertGreater(len(rim.last_mapping), 1)
-            self.assertEqual(len(rim.last_mapping), len(rim.handles))
-            self.assertEqual(update.call_count, len(rim.last_mapping))
-            self.assertTrue(all(props == (255, True) for props in thumbnail_properties))
-            for (left, top, right, bottom), source, zoom, valid in rim.last_mapping:
+            self.assertEqual(len(rim.last_mapping) * 5, len(rim.handles))
+            self.assertEqual(update.call_count, len(rim.handles))
+            for i, ((left, top, right, bottom), source, zoom, valid) in enumerate(rim.last_mapping):
+                samples = thumbnail_properties[i * 5:i * 5 + 5]
+                self.assertEqual([p[0] for p in samples], [255, 51, 43, 36, 32])
+                self.assertTrue(all(p[1] for p in samples))
+                self.assertEqual(samples[0][2], source)
+                self.assertEqual([(p[2][0] - source[0], p[2][1] - source[1]) for p in samples],
+                                 [(0, 0), (-2, 0), (2, 0), (0, -2), (0, 2)])
                 self.assertTrue(valid)
                 self.assertAlmostEqual(zoom, .98)
                 expected = (109 + left * zoom, 87.8 + top * zoom,
@@ -86,6 +93,16 @@ class RefractionTests(unittest.TestCase):
                              (width // 2, scale), (width // 2, height - scale - 1)):
                     self.assertTrue(any(left <= x < right and top <= y < bottom
                                         for left, top, right, bottom in bands))
+
+    def test_corner_bands_are_compact_without_cutting_far_into_glass(self):
+        radius, width, height = 52, 900, 780
+        bands = glass.glass_bands(width, height, radius)
+        self.assertLess(len(bands), 35)
+        for left, top, _, bottom in bands:
+            for y in range(top, min(bottom, radius + 1), 2):
+                distance = y - 1
+                exact = 1 + math.ceil(radius - math.sqrt(radius * radius - (radius - distance) ** 2))
+                self.assertLessEqual(left - exact, 2)
 
     def test_missing_source_hides_underlay(self):
         widget = QWidget(); widget.show()
@@ -132,6 +149,25 @@ class RefractionTests(unittest.TestCase):
         rim.timer.stop()
         rim.clear()
         delete(rim.underlay); delete(widget)
+
+    def test_dialog_close_promptly_restores_window_order(self):
+        class ProbeRim(DesktopRim):
+            def __init__(self, widget):
+                self.updates = 0
+                super().__init__(widget, lambda: 0)
+                self.poll.stop()
+            def sync(self):
+                self.updates += 1
+
+        widget = QWidget(); widget.show()
+        rim = ProbeRim(widget)
+        dialog = QDialog(widget)
+        rim.timer.stop(); rim.updates = 0
+        QCoreApplication.sendEvent(dialog, QEvent(QEvent.Type.Hide))
+        QTest.qWait(50)
+        self.assertGreater(rim.updates, 0, '弹窗关闭后应立即恢复玻璃窗口的层级')
+        rim.timer.stop(); rim.clear()
+        delete(dialog); delete(rim.underlay); delete(widget)
 
 
 if __name__ == '__main__':

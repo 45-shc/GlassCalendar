@@ -234,6 +234,24 @@ class CalendarTests(unittest.TestCase):
             self.window.delete_item('todos', 0)
         self.assertEqual(self.window.data['todos'], [])
 
+    def test_dialogs_restore_desktop_layer_before_returning(self):
+        from datetime import date
+        self.window.data['todos'] = [{'text': '保留事项'}]
+        actions = (
+            (main.DayDialog, lambda: self.window.edit_event(date(2026, 11, 5))),
+            (main.ItemDialog, lambda: self.window.add_item('todos')),
+            (main.ItemDialog, lambda: self.window.edit_item('todos', 0)),
+            (main.QMessageBox, lambda: self.window.delete_item('todos', 0)),
+        )
+        for dialog_type, action in actions:
+            with self.subTest(dialog=dialog_type.__name__), \
+                 patch.object(dialog_type, 'exec', return_value=0) as execute, \
+                 patch.object(self.window.desktop_rim, 'sync') as sync:
+                action()
+                execute.assert_called_once()
+                sync.assert_called_once()
+        self.assertEqual(self.window.data['todos'], [{'text': '保留事项'}])
+
     def test_long_todo_delete_button_is_visible_and_confirmation_works(self):
         from PySide6.QtCore import QTimer
         self.window.resize(700, 620)

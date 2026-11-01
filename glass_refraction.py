@@ -36,20 +36,30 @@ dwm.DwmUpdateThumbnailProperties.argtypes = [wt.HANDLE, ctypes.POINTER(THUMBNAIL
 def glass_radius(logical_width):
     return min(52.0, max(38.0, logical_width * .055))
 
+BLUR_SAMPLES = ((0, 0, 255), (-2, 0, 51), (2, 0, 43), (0, -2, 36), (0, 2, 32))
+
 def glass_bands(width, height, radius, inset=1):
     """Rectangles inside a rounded silhouette; DWM thumbnails ignore window regions."""
     radius = min(round(radius), (width - 2 * inset) // 2, (height - 2 * inset) // 2)
     if radius <= 0:
         return []
     bands = []
-    for y in range(0, radius, 2):
-        end = min(y + 2, radius)
+    y = 0
+    while y < radius:
         left = inset + math.ceil(radius - math.sqrt(radius * radius - (radius - y) ** 2))
+        end = min(y + 2, radius)
+        while end < radius:
+            next_left = inset + math.ceil(radius - math.sqrt(radius * radius - (radius - end) ** 2))
+            if left - next_left > 2:
+                break
+            end = min(end + 2, radius)
         bands.append((left, inset + y, width - left, inset + end))
+        y = end
+    top_count = len(bands)
     if inset + radius < height - inset - radius:
         bands.append((inset, inset + radius, width - inset, height - inset - radius))
     bands.extend((left, height - bottom, right, height - top)
-                 for left, top, right, bottom in reversed(bands[:(radius + 1) // 2]))
+                 for left, top, right, bottom in reversed(bands[:top_count]))
     return bands
 
 class _Underlay(QWidget):
@@ -79,7 +89,7 @@ class DesktopRim(QObject):
         self.timer = QTimer(self); self.timer.setSingleShot(True)
         self.timer.setTimerType(Qt.TimerType.PreciseTimer); self.timer.timeout.connect(self.sync)
         self.poll = QTimer(self); self.poll.timeout.connect(self.sync); self.poll.start(1500)
-        widget.installEventFilter(self)
+        QApplication.instance().installEventFilter(self)
         widget.destroyed.connect(self.clear)
         QApplication.instance().aboutToQuit.connect(self.clear)
 
@@ -91,15 +101,21 @@ class DesktopRim(QObject):
         self.handles.clear()
         self.source = self.target = 0; self.last_signature = None; self.last_mapping = []
 
-    def eventFilter(self, _obj, event):
-        if event.type() == QEvent.Type.Move:
-            self.sync()
-        elif event.type() in (QEvent.Type.Show, QEvent.Type.Resize,
-                            QEvent.Type.WinIdChange, QEvent.Type.WindowStateChange,
-                            QEvent.Type.ZOrderChange):
-            if not self.timer.isActive(): self.timer.start(8)
-        elif event.type() in (QEvent.Type.Hide, QEvent.Type.Close):
-            self.clear()
+    def eventFilter(self, obj, event):
+        if obj is self.widget:
+            if event.type() == QEvent.Type.Move:
+                self.sync()
+            elif event.type() in (QEvent.Type.Show, QEvent.Type.Resize,
+                                  QEvent.Type.WinIdChange, QEvent.Type.WindowStateChange,
+                                  QEvent.Type.ZOrderChange, QEvent.Type.WindowActivate,
+                                  QEvent.Type.WindowDeactivate):
+                if not self.timer.isActive(): self.timer.start(8)
+            elif event.type() in (QEvent.Type.Hide, QEvent.Type.Close):
+                self.clear()
+        elif (isinstance(obj, QWidget) and obj.isWindow() and obj.parentWidget() is self.widget
+              and event.type() in (QEvent.Type.Show, QEvent.Type.Hide, QEvent.Type.Close,
+                                   QEvent.Type.WindowActivate, QEvent.Type.WindowDeactivate)):
+            self.timer.start(0)
         return False
 
     def sync(self):
@@ -155,15 +171,23 @@ class DesktopRim(QObject):
                 bands.append((dest, src, zoom, True))
             if not bands:
                 self.clear(); return
-            while len(self.handles) < len(bands):
+            samples = []
+            for dest, src, _, _ in bands:
+                for dx, dy, opacity in BLUR_SAMPLES:
+                    xshift = min(size.cx - src[2], max(-src[0], round(dx * scale * sx)))
+                    yshift = min(size.cy - src[3], max(-src[1], round(dy * scale * sy)))
+                    sample = (src[0] + xshift, src[1] + yshift,
+                              src[2] + xshift, src[3] + yshift)
+                    samples.append((dest, sample, opacity))
+            while len(self.handles) < len(samples):
                 h = wt.HANDLE()
                 if dwm.DwmRegisterThumbnail(target, source, ctypes.byref(h)) != 0:
                     self.clear(); return
                 self.handles.append(h)
-            while len(self.handles) > len(bands):
+            while len(self.handles) > len(samples):
                 dwm.DwmUnregisterThumbnail(self.handles.pop())
-            for handle, (dest, src, _, _) in zip(self.handles, bands):
-                props = THUMBNAIL(1|2|4|8, RECT(*dest), RECT(*src), 255, True, False)
+            for handle, (dest, src, opacity) in zip(self.handles, samples):
+                props = THUMBNAIL(1|2|4|8, RECT(*dest), RECT(*src), opacity, True, False)
                 if dwm.DwmUpdateThumbnailProperties(handle, ctypes.byref(props)) != 0:
                     self.clear(); return
             self.last_signature = signature

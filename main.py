@@ -15,7 +15,7 @@ from PySide6.QtCore import Qt, QPoint, QRect, QRectF, QTimer, QDateTime, QLockFi
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QFont, QFontDatabase, QLinearGradient, QBrush, QIcon, QPixmap, QAction
 from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QGridLayout, QInputDialog, QCheckBox, QScrollArea, QSizePolicy,
-    QSystemTrayIcon, QMenu, QDialog, QDialogButtonBox, QLineEdit, QDateTimeEdit, QFormLayout, QSizeGrip, QMessageBox, QPlainTextEdit, QButtonGroup)
+    QSystemTrayIcon, QMenu, QDialog, QDialogButtonBox, QLineEdit, QDateTimeEdit, QFormLayout, QSizeGrip, QMessageBox, QPlainTextEdit, QButtonGroup, QStyle, QStyleOptionButton)
 from glass_refraction import DesktopRim, glass_radius
 
 LEGACY_DATA = Path(os.getenv('APPDATA', str(Path.home()))) / 'GlassCalendar' / 'data.json'
@@ -25,6 +25,8 @@ STARTUP_DIR = Path(os.getenv('APPDATA', str(Path.home()))) / 'Microsoft' / 'Wind
 STARTUP_RETRY = STARTUP_DIR / 'GlassCalendar-retry.vbs'
 MARK_COLORS = [('琥珀', '#f6c975'), ('蜜桃', '#f2a9a4'), ('薄荷', '#a6d9d0'), ('天空', '#a9c8f2')]
 HAND_FONT = 'ZCOOL KuaiLe'
+BROOKLYN_FONT = 'ZCOOL KuaiLe'
+BROOKLYN_TEXT_FONT = 'Ma Shan Zheng'
 BRUSH_CACHE = {}
 
 
@@ -91,6 +93,53 @@ def doodle_accent():
     label.setPixmap(pixmap.scaled(label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
     label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
     return label
+
+
+class BrooklynHeader(QWidget):
+    def __init__(self, art):
+        super().__init__()
+        self.art = art
+        self.setFixedSize(300, 92)
+        self.setAccessibleName('月度日历')
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        p.drawPixmap(QRectF(self.rect()), self.art, QRectF(self.art.rect()))
+
+
+class SectionTitle(QLabel):
+    def __init__(self, text, key, art):
+        super().__init__(text)
+        self.key, self.art, self.brooklyn = key, art, False
+
+    def paintEvent(self, event):
+        if self.brooklyn:
+            p = QPainter(self)
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            source = QRectF(75 if self.key == 'todos' else 1265, 325, 850, 85)
+            p.drawPixmap(QRectF(0, self.height() - 10, min(165, self.width()), 10), self.art, source)
+            p.end()
+        super().paintEvent(event)
+
+
+class HandwrittenCheckBox(QCheckBox):
+    def __init__(self, text, brooklyn):
+        super().__init__(text)
+        self.brooklyn = brooklyn
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self.brooklyn and self.isChecked():
+            option = QStyleOptionButton(); option.initFrom(self)
+            indicator = self.style().subElementRect(QStyle.SubElement.SE_CheckBoxIndicator, option, self)
+            p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setPen(QPen(QColor('#e85a4c'), 2.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+            path = QPainterPath(QPoint(indicator.left() + 3, indicator.center().y()))
+            path.lineTo(indicator.left() + 8, indicator.bottom() - 4)
+            path.lineTo(indicator.right() - 2, indicator.top() + 3)
+            p.drawPath(path)
 
 
 def marker_brush(variant, color):
@@ -170,9 +219,10 @@ class DayDialog(QDialog):
 
 
 class DayButton(QPushButton):
-    def __init__(self, day, current_month, text, mark, parent=None):
+    def __init__(self, day, current_month, text, mark, parent=None, theme='glass'):
         super().__init__(parent)
         self.day, self.current_month, self.note, self.mark = day, current_month, text, mark or {}
+        self.theme = theme
         self.setAccessibleName(day.isoformat() + (' ' + text if text else ''))
         self.setToolTip(text or '点击添加日程或标记')
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -192,14 +242,22 @@ class DayButton(QPushButton):
                 p.drawPixmap(area, brush, QRectF(brush.rect()))
                 p.restore()
         if self.underMouse(): p.fillRect(area, QColor(255, 255, 255, 30))
-        p.setPen(QPen(QColor(222, 238, 251, 95), 1)); p.drawRect(area)
+        if self.theme == 'brooklyn':
+            p.fillRect(area, QColor(12, 13, 20, 48))
+            p.setPen(QPen(QColor(244, 241, 227, 125), 1)); p.drawRect(area)
+        else:
+            p.setPen(QPen(QColor(222, 238, 251, 95), 1)); p.drawRect(area)
         if self.day == date.today():
             p.fillRect(area.adjusted(2, 2, -2, -2), QColor(255, 235, 175, 28))
             p.setPen(QPen(QColor(255, 229, 154, 245), 2.5)); p.drawRect(area.adjusted(2, 2, -2, -2))
-        p.setFont(QFont(HAND_FONT, 17, QFont.Weight.Bold))
-        number = QRectF(8, 5, 42, 35)
+        compact = self.theme == 'brooklyn' and self.height() < 58
+        number_size = (17 if self.height() >= 48 else 15) if compact else 26 if self.theme == 'brooklyn' and self.height() >= 75 else 24 if self.theme == 'brooklyn' and self.height() >= 64 else 21 if self.theme == 'brooklyn' else 17
+        p.setFont(QFont(BROOKLYN_FONT if self.theme == 'brooklyn' else HAND_FONT, number_size, QFont.Weight.Bold))
+        number = QRectF(7, 1, 40, 27) if compact else QRectF(8, 5, 42, 35)
         if self.mark.get('circle'):
-            p.save(); p.translate(29, 22); p.rotate((variant % 5 - 2) * 3); p.translate(-29, -22)
+            p.save()
+            if compact: p.translate(4, 0); p.scale(.78, .68)
+            p.translate(29, 22); p.rotate((variant % 5 - 2) * 3); p.translate(-29, -22)
             ink = QColor(color); ink.setAlpha(230)
             p.setPen(QPen(ink, 2.2 + (variant % 3) * .35, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
             wobble = (variant % 4) - 1.5
@@ -222,8 +280,10 @@ class DayButton(QPushButton):
         p.setPen(QColor(250, 251, 253, 255 if self.current_month else 125))
         p.drawText(number, Qt.AlignmentFlag.AlignCenter, str(self.day.day))
         if self.note:
-            p.setFont(QFont(HAND_FONT, 11, QFont.Weight.Bold))
-            note_area = QRectF(10, 42, max(0, self.width() - 20), max(0, self.height() - 45))
+            p.setFont(QFont(BROOKLYN_TEXT_FONT if self.theme == 'brooklyn' else HAND_FONT,
+                            9 if compact else 12 if self.theme == 'brooklyn' and self.height() >= 75 else 11, QFont.Weight.Bold))
+            note_top = (31 if self.height() >= 48 else 28) if compact else 42
+            note_area = QRectF(10, note_top, max(0, self.width() - 20), max(0, self.height() - note_top - 2))
             p.setPen(QColor(23, 36, 52, 150 if self.current_month else 75))
             p.drawText(note_area.translated(1, 1), Qt.TextFlag.TextWordWrap | Qt.AlignmentFlag.AlignTop, self.note)
             p.setPen(QColor(255, 251, 231, 240 if self.current_month else 150))
@@ -257,10 +317,17 @@ class ItemDialog(QDialog):
 class GlassCalendar(QWidget):
     def __init__(self):
         super().__init__()
-        global HAND_FONT
+        global HAND_FONT, BROOKLYN_FONT, BROOKLYN_TEXT_FONT
         HAND_FONT = load_hand_font()
+        available_fonts = QFontDatabase.families()
+        BROOKLYN_FONT = next((name for name in ('STXingkai', '华文行楷', 'KaiTi', '楷体') if name in available_fonts), HAND_FONT)
         root = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
+        brush_font_id = QFontDatabase.addApplicationFont(str(root / 'assets' / 'MaShanZheng-Regular.ttf'))
+        BROOKLYN_TEXT_FONT = QFontDatabase.applicationFontFamilies(brush_font_id)[0]
         self.app_icon = QIcon(str(root / 'assets' / 'glass-calendar-icon.ico'))
+        self.brooklyn_header_art = QPixmap(str(root / 'assets' / 'brooklyn-title-exact.png'))
+        self.brooklyn_underlines = QPixmap(str(root / 'assets' / 'brooklyn-underlines.png'))
+        self.brooklyn_detail = QPixmap(str(root / 'assets' / 'brooklyn-detail-exact.png'))
         self.setWindowIcon(self.app_icon)
         self.setWindowTitle('玻璃日历')
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
@@ -285,6 +352,8 @@ class GlassCalendar(QWidget):
                     raise SystemExit(1)
         for key, default in [('events', {}), ('marks', {}), ('todos', []), ('goals', [])]:
             self.data.setdefault(key, default)
+        self.theme = self.data.get('settings', {}).get('theme', 'glass')
+        if self.theme not in ('glass', 'brooklyn'): self.theme = 'glass'
         self.pending_geometry = None
         self.fallback_geometry = None
         geometry = self.data.get('settings', {}).get('geometry')
@@ -308,6 +377,13 @@ class GlassCalendar(QWidget):
         super().showEvent(event)
         QTimer.singleShot(0, self.hide_taskbar)
         QTimer.singleShot(500, self.hide_taskbar)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, 'brooklyn_header') and self.theme == 'brooklyn':
+            self.brooklyn_header.setFixedSize(max(210, min(int(self.width() * .36), self.width() - 330)), max(80, min(120, int(self.height() * .13))))
+            self.root_layout.setContentsMargins(int(self.width() * .052), 17, int(self.width() * .03), 19)
+            self.bottom_gap.changeSize(0, int(self.height() * .025))
 
     def restore_pending_geometry(self, *_):
         if self.pending_geometry is None: return
@@ -339,11 +415,40 @@ class GlassCalendar(QWidget):
         silhouette.addRoundedRect(QRectF(1, 1, w - 2, h - 2), radius, radius)
         p.setClipPath(silhouette)
         glass = QLinearGradient(0, 0, w, h)
-        glass.setColorAt(0, QColor(38, 61, 89, 67))
-        glass.setColorAt(.42, QColor(25, 43, 64, 39))
-        glass.setColorAt(1, QColor(19, 36, 57, 73))
+        if self.theme == 'brooklyn':
+            glass.setColorAt(0, QColor(18, 20, 25, 145))
+            glass.setColorAt(.42, QColor(14, 15, 22, 115))
+            glass.setColorAt(1, QColor(20, 18, 24, 145))
+        else:
+            glass.setColorAt(0, QColor(38, 61, 89, 67))
+            glass.setColorAt(.42, QColor(25, 43, 64, 39))
+            glass.setColorAt(1, QColor(19, 36, 57, 73))
         p.setPen(Qt.PenStyle.NoPen); p.setBrush(glass)
         p.drawRoundedRect(QRectF(1, 1, w - 2, h - 2), radius, radius)
+
+        if self.theme == 'brooklyn':
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            p.save()
+            safe_area = QPainterPath(); safe_area.addRect(QRectF(0, 0, w, h))
+            for button in self.findChildren(QPushButton):
+                if button.objectName() == 'tool' and button.isVisibleTo(self):
+                    pos = button.mapTo(self, QPoint(0, 0))
+                    safe_area.addRect(QRectF(pos.x() - 3, pos.y() - 3, button.width() + 6, button.height() + 6))
+            p.setClipPath(safe_area, Qt.ClipOperation.IntersectClip)
+            # The turquoise corner follows the calendar grid, not the window.
+            # Exclude its original location before painting it at the grid corner.
+            p.save()
+            detail_area = QPainterPath(); detail_area.addRect(QRectF(0, 0, w, h))
+            corner_area = QPainterPath(); corner_area.addRect(QRectF(0, h * 450 / 1024, w * 230 / 1135, h * 350 / 1024))
+            p.setClipPath(detail_area.subtracted(corner_area), Qt.ClipOperation.IntersectClip)
+            p.drawPixmap(QRectF(0, 0, w, h), self.brooklyn_detail, QRectF(200, 0, 1135, 1024))
+            p.restore()
+            grid = self.grid.geometry()
+            scale = min(w / 1050, h / 910)
+            corner = QRectF(grid.left() - 20 * scale - 225 * scale,
+                            grid.bottom() + 1 - 200 * scale, 430 * scale, 350 * scale)
+            p.drawPixmap(corner, self.brooklyn_detail, QRectF(0, 450, 430, 350))
+            p.restore()
 
         # Let the edge light fade into the same glass surface without an inner cutout.
         for start, end, rect in (
@@ -397,6 +502,9 @@ class GlassCalendar(QWidget):
         self.tray.setToolTip('玻璃日历')
         menu = QMenu()
         menu.addAction('显示日历', self.show_calendar)
+        self.fixed_action = QAction('固定位置和大小', self, checkable=True)
+        self.fixed_action.setChecked(self.pin_button.isChecked())
+        self.fixed_action.toggled.connect(self.pin_button.setChecked); menu.addAction(self.fixed_action)
         self.bottom_action = QAction('桌面置底', self, checkable=True)
         self.bottom_action.setChecked(self.data.get('settings', {}).get('bottom', False))
         self.bottom_action.toggled.connect(self.set_bottom); menu.addAction(self.bottom_action)
@@ -412,6 +520,8 @@ class GlassCalendar(QWidget):
         self.sync_start_button(self.start_action.isChecked())
         self.start_button.toggled.connect(self.set_autostart)
         if self.start_action.isChecked(): self.set_autostart(True)
+        menu.addAction('最小化', self.showMinimized)
+        menu.addAction('隐藏日历', self.close)
         menu.addSeparator(); menu.addAction('退出', self.quit_app)
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(lambda reason: self.show_calendar() if reason == QSystemTrayIcon.ActivationReason.DoubleClick else None)
@@ -460,6 +570,66 @@ class GlassCalendar(QWidget):
         self.start_button.setText('自启：开' if enabled else '自启：关')
         self.start_button.setToolTip('点击关闭开机自启' if enabled else '点击开启开机自启')
 
+    def switch_theme(self):
+        self.theme = 'brooklyn' if self.theme == 'glass' else 'glass'
+        self.data.setdefault('settings', {})['theme'] = self.theme
+        self.save()
+        self.apply_theme()
+        self.refresh()
+        self.update()
+
+    def apply_theme(self):
+        brooklyn = self.theme == 'brooklyn'
+        self.theme_button.setText('风格  ▾' if brooklyn else '风格')
+        self.theme_button.setMinimumWidth(108 if brooklyn else 0)
+        self.theme_button.setToolTip('切换回玻璃风格' if brooklyn else '切换到布鲁克林涂鸦风格')
+        self.theme_button.setChecked(brooklyn)
+        self.title_label.setVisible(not brooklyn)
+        self.brooklyn_header.setVisible(brooklyn)
+        self.sparkles.setVisible(not brooklyn)
+        for button in (self.pin_button, self.start_button, self.minimize_button, self.close_button):
+            button.setVisible(not brooklyn)
+        self.root_layout.setContentsMargins(int(self.width() * .052) if brooklyn else 27, 17, int(self.width() * .03) if brooklyn else 27, 19)
+        self.root_layout.setSpacing(0 if brooklyn else 7)
+        self.bottom_gap.changeSize(0, int(self.height() * .025) if brooklyn else 0)
+        self.nav_layout.removeWidget(self.month_label)
+        self.top_layout.removeWidget(self.month_label)
+        if brooklyn:
+            self.top_layout.insertWidget(3, self.month_label)
+            self.brooklyn_header.setFixedSize(max(210, min(int(self.width() * .36), self.width() - 330)), max(80, min(120, int(self.height() * .13))))
+        else:
+            self.nav_layout.insertWidget(0, self.month_label)
+        self.month_label.setStyleSheet('font-size: 26px; font-weight: 700; color: #fff9e9;' if brooklyn else 'font-size: 30px; font-weight: 700;')
+        self.hint_label.setVisible(not brooklyn)
+        self.setStyleSheet(self.base_style + ('''
+            QWidget { font-family: "%s"; }
+            QPushButton#tool { color: #fff8e8; border: 1px solid rgba(242,225,196,100); background: rgba(20,22,25,115); }
+            QPushButton#tool:hover { border: 1px solid rgba(255,218,103,220); background: rgba(93,73,42,130); }
+            QPushButton#tool:checked { border: 1px solid rgba(255,211,93,200); background: rgba(153,110,35,120); }
+            QCheckBox { color: #fff9e9; font-family: "%s"; }
+            QCheckBox::indicator { width: 19px; height: 19px; border: 1px solid rgba(255,248,230,200); background: transparent; }
+            QCheckBox::indicator:checked { background: transparent; }
+        ''' % (BROOKLYN_TEXT_FONT, BROOKLYN_TEXT_FONT) if brooklyn else ''))
+        panel_style = ('QWidget#glassSection { background: rgba(16,17,22,85); border: 1px solid rgba(244,237,216,115); border-radius: 11px; }'
+                       if brooklyn else self.glass_panel_style)
+        self.bottom_layout.setStretch(0, 1 if brooklyn else 4)
+        self.bottom_layout.setStretch(1, 1 if brooklyn else 5)
+        for panel in self.section_panels: panel.setStyleSheet(panel_style)
+        for label, color in zip(self.section_labels, ('#fff9e9', '#fff9e9') if brooklyn else ('#fff0ba', '#d2f3e9')):
+            label.brooklyn = brooklyn
+            label.setMinimumWidth(175 if brooklyn else 0)
+            label.setStyleSheet(f'border: none; background: transparent; font-size: {29 if brooklyn else 20}px; font-weight: 700; color: {color};')
+            label.update()
+        self.weekdays_layout.setSpacing(0 if brooklyn else self.glass_weekday_spacing)
+        for i, label in enumerate(self.weekday_labels):
+            if brooklyn:
+                edge = '1px solid rgba(244,237,216,125)'
+                label.setStyleSheet(f'color: #fff9e9; font-size: 20px; font-weight: 700; border-top: {edge}; border-right: {edge};' + (f' border-left: {edge};' if i == 0 else ''))
+                label.setMinimumHeight(28)
+            else:
+                label.setStyleSheet('color: rgba(241,246,255,235); font-size: 16px; font-weight: 700;')
+                label.setMinimumHeight(0)
+
     def set_fixed(self, enabled):
         self.drag = None
         settings = self.data.setdefault('settings', {})
@@ -468,6 +638,8 @@ class GlassCalendar(QWidget):
         self.grip.setVisible(not enabled)
         self.pin_button.setText('已固定' if enabled else '固定')
         self.pin_button.setToolTip('已锁定位置和大小；点击解锁' if enabled else '点击锁定位置和大小')
+        if hasattr(self, 'fixed_action'):
+            self.fixed_action.blockSignals(True); self.fixed_action.setChecked(enabled); self.fixed_action.blockSignals(False)
         self.save()
 
     def show_calendar(self):
@@ -530,45 +702,54 @@ class GlassCalendar(QWidget):
             QScrollBar:vertical { background: transparent; width: 6px; }
             QScrollBar::handle:vertical { background: rgba(255,255,255,70); border-radius: 3px; }
         ''')
-        root = QVBoxLayout(self); root.setContentsMargins(27, 17, 27, 19); root.setSpacing(7)
-        top = QHBoxLayout()
-        title = QLabel('玻 璃 日 历'); title.setStyleSheet('font-size: 16px; font-weight: 700; color: rgba(255,255,255,230);')
-        top.addWidget(title); top.addWidget(doodle_accent()); top.addStretch()
+        self.base_style = self.styleSheet()
+        self.glass_panel_style = 'QWidget#glassSection { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 rgba(33,54,79,78),stop:0.5 rgba(24,42,65,54),stop:1 rgba(25,42,63,76)); border: 1px solid rgba(219,240,255,85); border-radius: 11px; }'
+        self.section_panels, self.section_labels = [], []
+        root = QVBoxLayout(self); self.root_layout = root; root.setContentsMargins(27, 17, 27, 19); root.setSpacing(7)
+        top = QHBoxLayout(); self.top_layout = top
+        self.title_label = QLabel('玻 璃 日 历'); self.title_label.setStyleSheet('font-size: 16px; font-weight: 700; color: rgba(255,255,255,230);')
+        self.brooklyn_header = BrooklynHeader(self.brooklyn_header_art)
+        self.sparkles = doodle_accent()
+        top.addWidget(self.title_label); top.addWidget(self.sparkles); top.addWidget(self.brooklyn_header); top.addStretch()
+        self.theme_button = self.button('风格', self.switch_theme); self.theme_button.setCheckable(True); top.addWidget(self.theme_button)
         fixed = self.data.get('settings', {}).get('fixed', False)
         self.pin_button = self.button('已固定' if fixed else '固定', lambda: None); self.pin_button.setCheckable(True); self.pin_button.setChecked(fixed)
         self.pin_button.setToolTip('已锁定位置和大小；点击解锁' if fixed else '点击锁定位置和大小')
         self.pin_button.toggled.connect(self.set_fixed); top.addWidget(self.pin_button)
         self.start_button = self.button('自启：关', lambda: None); self.start_button.setCheckable(True); top.addWidget(self.start_button)
         top.addWidget(self.button('⋯', lambda: self.tray.contextMenu().exec(self.mapToGlobal(QPoint(self.width() - 180, 40)))))
-        top.addWidget(self.button('—', self.showMinimized)); top.addWidget(self.button('×', self.close))
+        self.minimize_button = self.button('—', self.showMinimized); top.addWidget(self.minimize_button)
+        self.close_button = self.button('×', self.close); top.addWidget(self.close_button)
         root.addLayout(top)
-        nav = QHBoxLayout()
+        nav = QHBoxLayout(); self.nav_layout = nav
         self.month_label = QLabel(); self.month_label.setStyleSheet('font-size: 30px; font-weight: 700;')
         nav.addWidget(self.month_label); nav.addSpacing(10)
         nav.addWidget(self.button('‹', lambda: self.shift(-1)))
         nav.addWidget(self.button('›', lambda: self.shift(1)))
         nav.addWidget(self.button('今天', self.today)); nav.addStretch()
-        hint = QLabel('轻点日期，写下计划'); hint.setStyleSheet('color: rgba(245,247,251,220); font-size: 15px; font-weight: 600;')
-        nav.addWidget(hint); root.addLayout(nav)
-        weekdays = QHBoxLayout()
+        self.hint_label = QLabel('轻点日期，写下计划'); self.hint_label.setStyleSheet('color: rgba(245,247,251,220); font-size: 15px; font-weight: 600;')
+        nav.addWidget(self.hint_label); root.addLayout(nav)
+        weekdays = QHBoxLayout(); self.weekdays_layout = weekdays; self.glass_weekday_spacing = weekdays.spacing(); self.weekday_labels = []
         for text in ['周一', '周二', '周三', '周四', '周五', '周六', '周日']:
             label = QLabel(text); label.setAlignment(Qt.AlignmentFlag.AlignCenter); label.setStyleSheet('color: rgba(241,246,255,235); font-size: 16px; font-weight: 700;')
-            weekdays.addWidget(label)
+            self.weekday_labels.append(label); weekdays.addWidget(label)
         root.addLayout(weekdays)
         self.grid = QGridLayout(); self.grid.setSpacing(0); root.addLayout(self.grid, 5)
-        bottom = QHBoxLayout(); bottom.setSpacing(10)
+        bottom = QHBoxLayout(); self.bottom_layout = bottom; bottom.setSpacing(10)
         self.todo_layout = self.section(bottom, '待办事项', 'todos', '#fff0ba')
         self.goal_layout = self.section(bottom, '我的目标', 'goals', '#d2f3e9')
         bottom.setStretch(0, 4); bottom.setStretch(1, 5)
+        root.addSpacing(0); self.bottom_gap = root.itemAt(root.count() - 1).spacerItem()
         root.addLayout(bottom, 3)
         grip = QHBoxLayout(); grip.addStretch(); self.grip = QSizeGrip(self); self.grip.setVisible(not fixed); grip.addWidget(self.grip); root.addLayout(grip)
-        self.refresh()
+        self.apply_theme(); self.refresh()
 
     def section(self, parent, title, key, color):
         panel = QWidget(); panel.setObjectName('glassSection'); panel.setMaximumHeight(240)
-        panel.setStyleSheet('QWidget#glassSection { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 rgba(33,54,79,78),stop:0.5 rgba(24,42,65,54),stop:1 rgba(25,42,63,76)); border: 1px solid rgba(219,240,255,85); border-radius: 11px; }')
+        panel.setStyleSheet(self.glass_panel_style)
         outer = QVBoxLayout(panel); outer.setContentsMargins(14, 10, 14, 8)
-        head = QHBoxLayout(); label = QLabel(title); label.setStyleSheet(f'border: none; background: transparent; font-size: 20px; font-weight: 700; color: {color};')
+        head = QHBoxLayout(); label = SectionTitle(title, key, self.brooklyn_underlines); label.setStyleSheet(f'border: none; background: transparent; font-size: 20px; font-weight: 700; color: {color};')
+        self.section_panels.append(panel); self.section_labels.append(label)
         head.addWidget(label); head.addStretch(); head.addWidget(self.button('＋', lambda: self.add_item(key)))
         outer.addLayout(head)
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setStyleSheet('border: none; background: transparent;')
@@ -584,7 +765,7 @@ class GlassCalendar(QWidget):
             if item.widget(): item.widget().deleteLater()
 
     def refresh(self):
-        self.month_label.setText(f'{self.current.year}.{self.current.month:02d}')
+        self.month_label.setText(f'{self.current.year}年{self.current.month}月' if self.theme == 'brooklyn' else f'{self.current.year}.{self.current.month:02d}')
         self.clear(self.grid)
         for r in range(6): self.grid.setRowStretch(r, 0)
         weeks = calendar.Calendar(firstweekday=0).monthdatescalendar(self.current.year, self.current.month)
@@ -592,7 +773,7 @@ class GlassCalendar(QWidget):
             self.grid.setRowStretch(r, 1)
             for c, day in enumerate(week):
                 key = day.isoformat(); text = self.data['events'].get(key, '')
-                b = DayButton(day, day.month == self.current.month, text, self.data['marks'].get(key))
+                b = DayButton(day, day.month == self.current.month, text, self.data['marks'].get(key), theme=self.theme)
                 b.clicked.connect(lambda checked=False, d=day: self.edit_event(d))
                 self.grid.addWidget(b, r, c)
         for c in range(7): self.grid.setColumnStretch(c, 1)
@@ -602,7 +783,7 @@ class GlassCalendar(QWidget):
                 row = QWidget(); row.setStyleSheet('border: none; background: transparent;')
                 h = QHBoxLayout(row); h.setContentsMargins(0, 0, 0, 0)
                 due = item.get('due', '')
-                check = QCheckBox(item['text'] + (f'  ·  {due[:16].replace("T", " ")}' if due else '')); check.setChecked(item.get('done', False))
+                check = HandwrittenCheckBox(item['text'] + (f'  ·  {due[:16].replace("T", " ")}' if due else ''), self.theme == 'brooklyn'); check.setChecked(item.get('done', False))
                 check.setMinimumWidth(0); check.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
                 check.setToolTip(item['text'] + (f'\n截止：{due[:16].replace("T", " ")}' if due else ''))
                 check.toggled.connect(lambda value, k=key, n=i: self.toggle(k, n, value))

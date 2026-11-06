@@ -54,6 +54,84 @@ class CalendarTests(unittest.TestCase):
         self.assertEqual(json.loads(main.DATA.read_text(encoding='utf-8'))['events']['2026-11-08'], '提交')
         self.assertEqual(json.loads(main.DATA.with_suffix('.bak').read_text(encoding='utf-8'))['events']['2026-11-08'], '开会')
 
+    def test_theme_switch_persists_without_changing_calendar_data(self):
+        self.assertEqual(self.window.theme, 'glass')
+        self.window.data.update({
+            'events': {'2026-11-08': '会议'},
+            'marks': {'2026-11-08': {'circle': True, 'color': '#a6d9d0'}},
+            'todos': [{'text': '待办', 'done': False}],
+            'goals': [{'text': '目标', 'done': True}],
+            'settings': {'geometry': [30, 40, 900, 780], 'fixed': True, 'bottom': False},
+        })
+        before = json.loads(json.dumps(self.window.data, ensure_ascii=False))
+        self.window.switch_theme()
+        saved = main.read_data(main.DATA)
+        self.assertEqual(self.window.theme, 'brooklyn')
+        self.assertEqual(saved['settings'].pop('theme'), 'brooklyn')
+        self.assertEqual(saved, before)
+        with patch.object(main.GlassCalendar, 'setup_tray'):
+            restored = main.GlassCalendar()
+        restored.timer.stop()
+        self.assertEqual(restored.theme, 'brooklyn')
+        restored.switch_theme()
+        self.assertEqual(restored.theme, 'glass')
+        self.assertEqual(main.read_data(main.DATA)['settings']['theme'], 'glass')
+        restored.deleteLater()
+
+    def test_brooklyn_theme_keeps_editing_and_marks_working(self):
+        from datetime import date
+        self.window.switch_theme()
+        day = date(2026, 11, 8)
+        mark = {'circle': True, 'fill': True, 'color': '#f6c975'}
+        with patch.object(main.DayDialog, 'exec', return_value=main.QDialog.DialogCode.Accepted), \
+             patch.object(main.DayDialog, 'value', return_value=('事项', mark)):
+            self.window.edit_event(day)
+        self.window.data['todos'] = [{'text': '待办', 'done': False}]
+        self.window.toggle('todos', 0, True)
+        saved = main.read_data(main.DATA)
+        self.assertEqual(saved['events'][day.isoformat()], '事项')
+        self.assertTrue(saved['marks'][day.isoformat()]['circle'])
+        self.assertTrue(saved['todos'][0]['done'])
+
+    def test_theme_button_switches_without_overlapping_header_at_minimum_size(self):
+        from PySide6.QtWidgets import QPushButton
+        self.window.resize(700, 620)
+        self.window.show()
+        self.app.processEvents()
+        self.window.theme_button.click()
+        self.app.processEvents()
+        self.assertEqual(self.window.theme, 'brooklyn')
+        self.assertTrue(self.window.brooklyn_header.isVisible())
+        header = self.window.brooklyn_header.geometry()
+        for button in self.window.findChildren(QPushButton):
+            if button.objectName() == 'tool' and button.parentWidget() is self.window and button.isVisible():
+                self.assertFalse(header.intersects(button.geometry()))
+                self.assertTrue(self.window.rect().contains(button.geometry()))
+        self.window.theme_button.click()
+        self.assertEqual(self.window.theme, 'glass')
+
+    def test_brooklyn_fixed_menu_and_glass_button_stay_in_sync(self):
+        self.window.data['events']['2026-11-08'] = '保留事项'
+        with patch.object(main.winreg, 'OpenKey', side_effect=FileNotFoundError):
+            self.window.setup_tray()
+        self.addCleanup(self.window.tray.hide)
+        self.window.show()
+        self.window.switch_theme()
+        self.app.processEvents()
+        self.assertFalse(self.window.pin_button.isVisible())
+        self.window.fixed_action.trigger()
+        self.assertTrue(self.window.pin_button.isChecked())
+        self.assertTrue(self.window.data['settings']['fixed'])
+        self.assertTrue(main.read_data(main.DATA)['settings']['fixed'])
+        self.window.switch_theme()
+        self.app.processEvents()
+        self.assertTrue(self.window.pin_button.isVisible())
+        self.window.pin_button.click()
+        self.assertFalse(self.window.fixed_action.isChecked())
+        saved = main.read_data(main.DATA)
+        self.assertFalse(saved['settings']['fixed'])
+        self.assertEqual(saved['events']['2026-11-08'], '保留事项')
+
     def test_migration_preserves_data_and_does_not_replace_existing(self):
         legacy = Path(self.temp.name) / 'old' / 'data.json'
         target = Path(self.temp.name) / 'new' / 'data.json'
@@ -196,6 +274,25 @@ class CalendarTests(unittest.TestCase):
             brush = main.marker_brush(variant, QColor('#f2a9a4'))
             self.assertFalse(brush.isNull())
             self.assertTrue(brush.hasAlphaChannel())
+
+    def test_brooklyn_art_keeps_center_and_rounded_corners_transparent(self):
+        from PySide6.QtCore import QPoint, Qt
+        from PySide6.QtGui import QImage, QPainter, QRegion
+        from PySide6.QtWidgets import QWidget
+        for pixmap in (self.window.brooklyn_header_art, self.window.brooklyn_underlines, self.window.brooklyn_detail):
+            art = pixmap.toImage()
+            self.assertFalse(art.isNull())
+            self.assertTrue(art.hasAlphaChannel())
+            self.assertEqual(art.pixelColor(0, 0).alpha(), 0)
+        self.window.switch_theme()
+        self.window.resize(900, 780)
+        image = QImage(self.window.size(), QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(image)
+        self.window.render(painter, QPoint(), QRegion(), QWidget.RenderFlag.DrawWindowBackground)
+        painter.end()
+        for x, y in ((0, 0), (899, 0), (0, 779), (899, 779)):
+            self.assertEqual(image.pixelColor(x, y).alpha(), 0)
 
     def test_application_icon_is_available(self):
         self.assertFalse(self.window.app_icon.isNull())
